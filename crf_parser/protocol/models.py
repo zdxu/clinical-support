@@ -193,13 +193,16 @@ class FieldChange:
     """字段变更（对比模板后）"""
     change_type: str = ""   # "exclude" / "append" / "override"
     field_name: str = ""    # 对应模板的 field_name
-    detail: dict = field(default_factory=dict)  # append/override 时的具体内容
-    reason: str = ""        # 变更原因（来自 source_text）
+    detail: dict = field(default_factory=dict)  # append/override 时的具体内容；exclude 时为模板字段上下文
+    reason: str = ""        # 变更原因
     confidence: str = "medium"
-    source_ref: str = ""
-    source_text: str = ""
-    mapped_field_name: str = ""      # 映射模块B匹配到的 field_name（辅助 DM 理解变更来源）
-    mapping_confidence: str = ""     # 字段映射本身的置信度（区分变更置信度和映射置信度）
+    # ── Protocol 侧溯源 ──
+    protocol_description: str = ""  # 触发本条变更的原始 Protocol 字段描述（append/override 有；exclude 无）
+    source_ref: str = ""            # Protocol 原文位置（append/override 有；exclude 无）
+    source_text: str = ""           # Protocol 原文片段（append/override 有；exclude 无）
+    # ── 映射溯源 ──
+    mapped_field_name: str = ""      # 映射模块B匹配到的 field_name
+    mapping_confidence: str = ""     # 字段映射本身的置信度
 
     def to_dict(self) -> dict:
         return {
@@ -208,6 +211,7 @@ class FieldChange:
             "detail": self.detail,
             "reason": self.reason,
             "confidence": self.confidence,
+            "protocol_description": self.protocol_description,
             "source_ref": self.source_ref,
             "source_text": self.source_text,
             "mapped_field_name": self.mapped_field_name,

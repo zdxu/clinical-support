@@ -201,11 +201,12 @@ def _write_sheet2(ws, extraction):
         ws,
         "字段变更审核：红色=low置信度需处理，黄色=medium建议检查，绿色=high可直接确认。"
         "审核结果列填写：✓确认 / ✗拒绝 / 直接填写修改内容。"
-        "\"映射字段名\"列帮助理解变更来源，\"映射置信度\"表示字段匹配本身的置信度。",
+        "\"Protocol字段描述\"为触发本条变更的原始描述，\"来源定位/原文片段\"为其在 Protocol 中的位置。"
+        "exclude 行的\"变更内容\"列含模板字段上下文（label/data_type/unit），帮助判断是否真的不收集。",
     )
     headers = [
         "Form", "变更类型", "字段名", "变更内容", "置信度",
-        "映射字段名", "映射置信度",
+        "Protocol字段描述", "映射字段名", "映射置信度",
         "来源定位", "原文片段", "审核结果",
     ]
     _add_header_row(ws, headers)
@@ -223,6 +224,7 @@ def _write_sheet2(ws, extraction):
                 c.field_name,
                 detail_str,
                 c.confidence,
+                getattr(c, "protocol_description", ""),
                 getattr(c, "mapped_field_name", ""),
                 getattr(c, "mapping_confidence", ""),
                 c.source_ref,

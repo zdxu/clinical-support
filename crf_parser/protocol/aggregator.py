@@ -177,12 +177,18 @@ def compare_with_template(
         if not field_name:
             continue
         if field_name not in matched_field_names:
+            # detail 保留模板字段上下文，方便 DM 判断是否真的不收集
             changes.append(FieldChange(
                 change_type="exclude",
                 field_name=field_name,
-                detail={},
-                reason=f"Protocol 未提及该字段，可能不需要收集（需人工确认）",
+                detail={
+                    "label": template_field.get("label", ""),
+                    "data_type": template_field.get("data_type", ""),
+                    "units": template_field.get("units", template_field.get("unit", "")),
+                },
+                reason="Protocol 未提及该字段，可能不需要收集（需人工确认）",
                 confidence="low",
+                protocol_description="",
                 source_ref="",
                 source_text="",
                 mapped_field_name="",
@@ -196,8 +202,9 @@ def compare_with_template(
             change_type="append",
             field_name=detail.get("field_name", ""),
             detail=detail,
-            reason=mapping.reason or f"Protocol 描述了该字段但模板中未找到对应字段",
+            reason=mapping.reason or "Protocol 描述了该字段但模板中未找到对应字段",
             confidence="high",
+            protocol_description=mapping.protocol_description,
             source_ref=mapping.source_ref,
             source_text=mapping.source_text,
             mapped_field_name=mapping.matched_field_name,
@@ -220,6 +227,7 @@ def compare_with_template(
                 detail=attr_diff,
                 reason=f"Protocol 描述与模板属性存在差异：{attr_diff.get('attribute', '')}",
                 confidence="medium",
+                protocol_description=mapping.protocol_description,
                 source_ref=mapping.source_ref,
                 source_text=mapping.source_text,
                 mapped_field_name=mapping.matched_field_name,
@@ -297,6 +305,7 @@ def compare_with_template_legacy(
                     detail=item.get("detail", {}),
                     reason=item.get("reason", ""),
                     confidence=item.get("confidence", "medium"),
+                    protocol_description=item.get("protocol_description", ""),
                     source_ref=item.get("source_ref", ""),
                     source_text=item.get("source_text", ""),
                 ))
