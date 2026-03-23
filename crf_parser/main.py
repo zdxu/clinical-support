@@ -55,14 +55,14 @@ def main():
     image_paths = pdf_to_images(str(pdf_path), tmp_dir=args.tmp_dir)
     console.print(f"[green]截图完成[/green]：共 {len(image_paths)} 页\n")
 
-    # ── Step b: 初始化 Anthropic client ──
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    # ── Step b: 初始化 OpenAI client ──
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "your_api_key_here":
-        console.print("[red]错误：请在 .env 中设置 ANTHROPIC_API_KEY[/red]")
+        console.print("[red]错误：请在 .env 中设置 OPENAI_API_KEY[/red]")
         sys.exit(1)
 
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
 
     # ── Step c: 页面扫描与分组 ──
     from parser.image_grouper import scan_and_group

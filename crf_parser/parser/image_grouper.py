@@ -2,7 +2,7 @@ import json
 import time
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 from rich.console import Console
 from rich.table import Table
 
@@ -11,7 +11,7 @@ from .models import PageImage, FormPages
 console = Console()
 
 
-def classify_page(image_path: str, page_number: int, client: anthropic.Anthropic) -> dict:
+def classify_page(image_path: str, page_number: int, client: OpenAI) -> dict:
     """
     对单张页面图片调用 LLM Vision，只提取页头信息。
 
@@ -41,20 +41,18 @@ def classify_page(image_path: str, page_number: int, client: anthropic.Anthropic
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+            response = client.chat.completions.create(
+                model="gpt-4o",
                 max_tokens=256,
-                system=system_prompt,
                 messages=[
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": [
                             {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": image_b64,
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_b64}",
                                 },
                             },
                             {
@@ -62,11 +60,11 @@ def classify_page(image_path: str, page_number: int, client: anthropic.Anthropic
                                 "text": "请提取该页面的页头信息，返回 JSON。",
                             },
                         ],
-                    }
+                    },
                 ],
             )
 
-            raw = response.content[0].text.strip()
+            raw = response.choices[0].message.content.strip()
             # 去掉可能的 ```json ``` 标记
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
@@ -96,7 +94,7 @@ def classify_page(image_path: str, page_number: int, client: anthropic.Anthropic
                 }
 
 
-def scan_and_group(image_paths: list, client: anthropic.Anthropic) -> list:
+def scan_and_group(image_paths: list, client: OpenAI) -> list:
     """
     顺序扫描所有页面，用计数状态机按 form_name 分组为 FormPages 列表。
 

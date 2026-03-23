@@ -3,7 +3,7 @@ import json
 import time
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 from rich.console import Console
 
 from .models import FieldDef, FormPages
@@ -47,22 +47,20 @@ def _encode_image(image_path: str) -> str:
 
 
 def _build_image_content(image_paths: list) -> list:
-    """构建多图片的 content 列表"""
+    """构建多图片的 content 列表（OpenAI 格式）"""
     content = []
     for path in image_paths:
         content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": _encode_image(path),
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{_encode_image(path)}",
             },
         })
     return content
 
 
 def _call_llm_with_retry(
-    client: anthropic.Anthropic,
+    client: OpenAI,
     system_prompt: str,
     image_paths: list,
     user_text: str,
@@ -77,14 +75,16 @@ def _call_llm_with_retry(
 
     for attempt in range(max_retries):
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+            response = client.chat.completions.create(
+                model="gpt-4o",
                 max_tokens=4096,
-                system=system_prompt,
-                messages=[{"role": "user", "content": content}],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
             )
 
-            raw = response.content[0].text.strip()
+            raw = response.choices[0].message.content.strip()
 
             # 去掉 ```json ``` 标记
             if raw.startswith("```"):
@@ -99,7 +99,7 @@ def _call_llm_with_retry(
         except json.JSONDecodeError as e:
             error_path = Path(tmp_dir) / f"{form_name.lower().replace(' ', '_')}_{call_type}_error_response.txt"
             error_path.parent.mkdir(parents=True, exist_ok=True)
-            error_path.write_text(response.content[0].text if "response" in dir() else str(e))
+            error_path.write_text(response.choices[0].message.content if "response" in dir() else str(e))
             console.print(f"[red]JSON 解析失败，原始响应已保存至 {error_path}[/red]")
             if attempt < max_retries - 1:
                 time.sleep(2)
@@ -115,7 +115,7 @@ def _call_llm_with_retry(
 
 def parse_form_with_vision(
     form_pages: FormPages,
-    client: anthropic.Anthropic,
+    client: OpenAI,
     tmp_dir: str = "tmp",
 ) -> list:
     """
