@@ -1,0 +1,6 @@
+pymupdf
+anthropic
+pyyaml
+python-dotenv
+rich
+pillow
