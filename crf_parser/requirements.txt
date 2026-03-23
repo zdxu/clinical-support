@@ -1,6 +1,9 @@
 pymupdf
-anthropic
+openai
 pyyaml
 python-dotenv
 rich
 pillow
+python-docx
+openpyxl
+rapidfuzz
