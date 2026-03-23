@@ -139,25 +139,36 @@ def _write_sheet0(ws, form_mapping_result):
 
 
 # ─────────────────────────────────────────────
-# Sheet 1：Form 清单确认
+# Sheet 1：Form 清单确认（更新：新增提取置信度、来源定位、原文片段列）
 # ─────────────────────────────────────────────
 
 def _write_sheet1(ws, extraction, history_forms: list):
     from openpyxl.styles import PatternFill, Font, Alignment
     from openpyxl.utils import get_column_letter
 
-    _add_desc_row(ws, "Form 清单确认：请检查每个 Form 是否正确。审核结果列填写：✓保留 / ✗移除 / 直接填写正确名称")
-    headers = ["序号", "Form名称", "来源", "模板文件", "审核结果", "备注"]
+    _add_desc_row(
+        ws,
+        "Form 清单确认：请检查每个 Form 是否正确。"
+        "审核结果列填写：✓保留 / ✗移除 / 直接填写正确名称。"
+        "置信度颜色：绿=high，黄=medium，红=low。",
+    )
+    headers = ["序号", "Form名称", "来源", "模板文件", "提取置信度", "来源定位", "原文片段", "审核结果", "备注"]
     _add_header_row(ws, headers)
 
     history_lower = {f.lower() for f in history_forms}
 
-    row = 3
+    # 构建 form_name → FormFinding 的查找字典
+    findings_lookup = {}
+    for ff in getattr(extraction, "extracted_form_findings", []):
+        name = ff.form_name if hasattr(ff, "form_name") else ff.get("form_name", "")
+        findings_lookup[name] = ff
+
     idx = 1
     for form in extraction.fixed_forms:
         template_file = _form_to_filename(form) + ".yaml"
-        ws.append([idx, form, "固定", template_file, "", ""])
-        row += 1
+        ws.append([idx, form, "固定", template_file, "high", "（固定清单）", "", "", ""])
+        cur_row = ws.max_row
+        ws.cell(cur_row, 5).fill = _confidence_fill("high")
         idx += 1
 
     for form in extraction.extracted_forms:
@@ -167,8 +178,20 @@ def _write_sheet1(ws, extraction, history_forms: list):
         else:
             source = "新建"
             template_file = "（待新建）"
-        ws.append([idx, form, source, template_file, "", ""])
-        row += 1
+
+        ff = findings_lookup.get(form)
+        if ff:
+            confidence = ff.confidence if hasattr(ff, "confidence") else ff.get("confidence", "medium")
+            source_ref = ff.source_ref if hasattr(ff, "source_ref") else ff.get("source_ref", "")
+            source_text = ff.source_text if hasattr(ff, "source_text") else ff.get("source_text", "")
+        else:
+            confidence, source_ref, source_text = "medium", "", ""
+
+        ws.append([idx, form, source, template_file, confidence, source_ref, source_text, "", ""])
+        cur_row = ws.max_row
+        fill = _confidence_fill(confidence)
+        if fill:
+            ws.cell(cur_row, 5).fill = fill
         idx += 1
 
     _auto_width(ws)

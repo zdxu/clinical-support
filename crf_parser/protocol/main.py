@@ -125,15 +125,17 @@ def main():
     console.print(f"[dim]history 模板库：{len(history_forms)} 个 Form[/dim]")
 
     if args.phase in (0, 1):
-        extracted_forms = extract_forms_list(
+        # extract_forms_list 现在返回 list[FormFinding]（含溯源）
+        extracted_form_findings = extract_forms_list(
             chapters=chapters,
             docx_path=str(input_path) if ext == ".docx" else None,
             image_paths=image_paths if ext == ".pdf" else None,
             file_type=ext.lstrip("."),
             client=client,
         )
+        extracted_forms = [ff.form_name for ff in extracted_form_findings]
 
-        # 保存 forms_list.json
+        # 保存 forms_list.json（含溯源信息）
         forms_list_path = output_base / "forms_list.json"
         all_forms = FIXED_FORMS + extracted_forms
         with open(forms_list_path, "w", encoding="utf-8") as f:
@@ -141,6 +143,7 @@ def main():
                 "fixed_forms": FIXED_FORMS,
                 "extracted_forms": extracted_forms,
                 "all_forms": all_forms,
+                "extracted_form_findings": [ff.to_dict() for ff in extracted_form_findings],
             }, f, ensure_ascii=False, indent=2)
         console.print(f"\n[green]Form 清单已保存：{forms_list_path}[/green]")
 
@@ -175,6 +178,7 @@ def main():
             forms_data = json.load(f)
         extracted_forms = forms_data.get("extracted_forms", [])
         all_forms = forms_data.get("all_forms", FIXED_FORMS + extracted_forms)
+        extracted_form_findings = _load_form_findings(output_base)
         console.print(f"[cyan]读取已确认 Form 清单：{len(all_forms)} 个[/cyan]")
 
         # 读取已有的 Form 映射结果（若存在）
@@ -235,6 +239,7 @@ def main():
         study_info=study_info,
         fixed_forms=FIXED_FORMS,
         extracted_forms=extracted_forms,
+        extracted_form_findings=extracted_form_findings,
     )
 
     for form_name in extracted_forms:
@@ -329,6 +334,25 @@ def main():
     console.print(f"\n[green]完成！[/green]")
     console.print(f"  审核表: [cyan]{checklist_path}[/cyan]")
     console.print(f"  汇总:   [cyan]{extraction_path}[/cyan]")
+
+
+def _load_form_findings(output_base: Path) -> list:
+    """从 forms_list.json 读取 extracted_form_findings（list[FormFinding]）"""
+    from protocol.models import FormFinding
+    forms_list_path = output_base / "forms_list.json"
+    if not forms_list_path.exists():
+        return []
+    with open(forms_list_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    findings = []
+    for item in data.get("extracted_form_findings", []):
+        findings.append(FormFinding(
+            form_name=item.get("form_name", ""),
+            confidence=item.get("confidence", "medium"),
+            source_ref=item.get("source_ref", ""),
+            source_text=item.get("source_text", ""),
+        ))
+    return findings
 
 
 def _load_template_for_form(form_name: str, form_mapping_result, history_dir: str) -> list:

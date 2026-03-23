@@ -3,6 +3,27 @@ from typing import Optional
 
 
 # ─────────────────────────────────────────────
+# Form 提取结果（含溯源）
+# ─────────────────────────────────────────────
+
+@dataclass
+class FormFinding:
+    """Phase 1 提取的单个 Form 名称（含溯源）"""
+    form_name: str = ""         # Form 名称，如 "Vital Signs"
+    confidence: str = "medium"  # "high" / "medium" / "low"
+    source_ref: str = ""        # PDF: "第45页" | docx: "6.3 Assessments > 段落2"
+    source_text: str = ""       # 原文引用片段，禁止改写
+
+    def to_dict(self) -> dict:
+        return {
+            "form_name": self.form_name,
+            "confidence": self.confidence,
+            "source_ref": self.source_ref,
+            "source_text": self.source_text,
+        }
+
+
+# ─────────────────────────────────────────────
 # Form 级映射结果
 # ─────────────────────────────────────────────
 
@@ -200,8 +221,9 @@ class FieldChange:
 class ProtocolExtraction:
     """最终汇总"""
     study_info: StudyInfo = field(default_factory=StudyInfo)
-    fixed_forms: list = field(default_factory=list)       # 来源A，hardcode
-    extracted_forms: list = field(default_factory=list)   # 来源B，Phase 1 提取
+    fixed_forms: list = field(default_factory=list)       # 来源A，hardcode（list[str]）
+    extracted_forms: list = field(default_factory=list)   # 来源B，Phase 1 提取（list[str]）
+    extracted_form_findings: list = field(default_factory=list)  # 来源B，含溯源（list[FormFinding]）
     field_changes: dict = field(default_factory=dict)     # form_name → list[FieldChange]
     study_specific_forms: list = field(default_factory=list)  # 模板没有的新 Form
     unknown_findings: list = field(default_factory=list)  # 无法归属，待人工处理
@@ -211,6 +233,10 @@ class ProtocolExtraction:
             "study_info": self.study_info.to_dict(),
             "fixed_forms": self.fixed_forms,
             "extracted_forms": self.extracted_forms,
+            "extracted_form_findings": [
+                f.to_dict() if hasattr(f, "to_dict") else f
+                for f in self.extracted_form_findings
+            ],
             "field_changes": {
                 k: [c.to_dict() if hasattr(c, "to_dict") else c for c in v]
                 for k, v in self.field_changes.items()
