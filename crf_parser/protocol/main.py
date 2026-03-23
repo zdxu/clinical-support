@@ -348,7 +348,6 @@ def _load_form_findings(output_base: Path) -> list:
     for item in data.get("extracted_form_findings", []):
         findings.append(FormFinding(
             form_name=item.get("form_name", ""),
-            confidence=item.get("confidence", "medium"),
             source_ref=item.get("source_ref", ""),
             source_text=item.get("source_text", ""),
         ))

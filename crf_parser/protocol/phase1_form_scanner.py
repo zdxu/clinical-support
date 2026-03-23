@@ -34,15 +34,11 @@ _SYSTEM_PROMPT_PDF = (
     "从内容中提取该章节提到的所有需要收集的评估项目名称（即 CRF Form 名称）。\n"
     "对每个 Form 必须包含：\n"
     "1. form_name：Form 名称，如 \"Vital Signs\"、\"12-lead ECG\"\n"
-    "2. confidence：\n"
-    "   - \"high\"   = 原文明确列出该评估项目（含表格/标题/清单）\n"
-    "   - \"medium\" = 原文描述了相关评估但未直接命名 Form\n"
-    "   - \"low\"    = 原文模糊，仅间接提及\n"
-    "3. source_ref：填写 \"第X页\"（使用传入的页码）\n"
-    "4. source_text：直接引用原文片段（1-2句），禁止改写或总结\n\n"
+    "2. source_ref：填写 \"第X页\"（使用传入的页码）\n"
+    "3. source_text：直接引用原文片段（1-2句），禁止改写或总结\n\n"
     "没有 Form 信息则 forms 返回空数组。\n"
     "只输出 JSON，不要有其他文字：\n"
-    "{\"forms\": [{\"form_name\": \"Vital Signs\", \"confidence\": \"high\", "
+    "{\"forms\": [{\"form_name\": \"Vital Signs\", "
     "\"source_ref\": \"第45页\", "
     "\"source_text\": \"Vital signs (blood pressure, heart rate, temperature) will be assessed...\"}]}"
 )
@@ -52,15 +48,11 @@ _SYSTEM_PROMPT_DOCX = (
     "从内容中提取该章节提到的所有需要收集的评估项目名称（即 CRF Form 名称）。\n"
     "对每个 Form 必须包含：\n"
     "1. form_name：Form 名称，如 \"Vital Signs\"、\"12-lead ECG\"\n"
-    "2. confidence：\n"
-    "   - \"high\"   = 原文明确列出该评估项目（含表格/标题/清单）\n"
-    "   - \"medium\" = 原文描述了相关评估但未直接命名 Form\n"
-    "   - \"low\"    = 原文模糊，仅间接提及\n"
-    "3. source_ref：填写 \"{chapter_title} > 段落{索引}\"\n"
-    "4. source_text：直接引用原文片段（1-2句），禁止改写或总结\n\n"
+    "2. source_ref：填写 \"{chapter_title} > 段落{索引}\"\n"
+    "3. source_text：直接引用原文片段（1-2句），禁止改写或总结\n\n"
     "没有 Form 信息则 forms 返回空数组。\n"
     "只输出 JSON，不要有其他文字：\n"
-    "{\"forms\": [{\"form_name\": \"Vital Signs\", \"confidence\": \"high\", "
+    "{\"forms\": [{\"form_name\": \"Vital Signs\", "
     "\"source_ref\": \"6.3 Assessments > 段落2\", "
     "\"source_text\": \"Vital signs will be measured at each scheduled visit.\"}]}"
 )
@@ -117,11 +109,10 @@ def scan_chapter_for_forms(
             for item in data.get("forms", []):
                 if isinstance(item, str):
                     # 兼容旧格式：纯字符串 → 降级为 FormFinding（无溯源）
-                    findings.append(FormFinding(form_name=item, confidence="medium"))
+                    findings.append(FormFinding(form_name=item))
                 else:
                     findings.append(FormFinding(
                         form_name=item.get("form_name", ""),
-                        confidence=item.get("confidence", "medium"),
                         source_ref=item.get("source_ref", ""),
                         source_text=item.get("source_text", ""),
                     ))

@@ -9,15 +9,13 @@ from typing import Optional
 @dataclass
 class FormFinding:
     """Phase 1 提取的单个 Form 名称（含溯源）"""
-    form_name: str = ""         # Form 名称，如 "Vital Signs"
-    confidence: str = "medium"  # "high" / "medium" / "low"
-    source_ref: str = ""        # PDF: "第45页" | docx: "6.3 Assessments > 段落2"
-    source_text: str = ""       # 原文引用片段，禁止改写
+    form_name: str = ""   # Form 名称，如 "Vital Signs"
+    source_ref: str = ""  # PDF: "第45页" | docx: "6.3 Assessments > 段落2"
+    source_text: str = "" # 原文引用片段，禁止改写
 
     def to_dict(self) -> dict:
         return {
             "form_name": self.form_name,
-            "confidence": self.confidence,
             "source_ref": self.source_ref,
             "source_text": self.source_text,
         }
