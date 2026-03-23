@@ -1,12 +1,11 @@
 """
 模块6：生成 Excel 审核表
 
-输出 output/protocol/review_checklist.xlsx，共5个 Sheet：
-  Sheet 0：Form 映射确认（新增）
+输出 output/protocol/review_checklist.xlsx，共4个 Sheet：
+  Sheet 0：Form 映射确认
   Sheet 1：Form 清单确认
   Sheet 2：字段变更审核
-  Sheet 3：未知字段处理
-  Sheet 4：新建 Form 字段草稿
+  Sheet 3：新建 Form 字段草稿
 """
 
 from pathlib import Path
@@ -65,13 +64,9 @@ def generate_checklist(
     ws2 = wb.create_sheet("字段变更审核")
     _write_sheet2(ws2, extraction)
 
-    # ─── Sheet 3：未知字段处理 ───
-    ws3 = wb.create_sheet("未知字段处理")
+    # ─── Sheet 3：新建Form字段草稿 ───
+    ws3 = wb.create_sheet("新建Form字段草稿")
     _write_sheet3(ws3, extraction)
-
-    # ─── Sheet 4：新建Form字段草稿 ───
-    ws4 = wb.create_sheet("新建Form字段草稿")
-    _write_sheet4(ws4, extraction)
 
     wb.save(str(output_path))
     console.print(f"[green]审核表已生成：{output_path}[/green]")
@@ -79,8 +74,7 @@ def generate_checklist(
         f"  Sheet0(Form映射): {ws0.max_row - 2} 行  "
         f"Sheet1(Form清单): {ws1.max_row - 2} 行  "
         f"Sheet2(字段变更): {ws2.max_row - 2} 行  "
-        f"Sheet3(未知字段): {ws3.max_row - 2} 行  "
-        f"Sheet4(新建Form): {ws4.max_row - 2} 行"
+        f"Sheet3(新建Form): {ws3.max_row - 2} 行"
     )
     return str(output_path)
 
@@ -191,7 +185,7 @@ def _write_sheet1(ws, extraction, history_forms: list):
 
 
 # ─────────────────────────────────────────────
-# Sheet 2：字段变更审核（更新：新增映射字段名、映射置信度列）
+# Sheet 2：字段变更审核
 # ─────────────────────────────────────────────
 
 def _write_sheet2(ws, extraction):
@@ -201,12 +195,10 @@ def _write_sheet2(ws, extraction):
         ws,
         "字段变更审核：红色=low置信度需处理，黄色=medium建议检查，绿色=high可直接确认。"
         "审核结果列填写：✓确认 / ✗拒绝 / 直接填写修改内容。"
-        "\"Protocol字段描述\"为触发本条变更的原始描述，\"来源定位/原文片段\"为其在 Protocol 中的位置。"
         "exclude 行的\"变更内容\"列含模板字段上下文（label/data_type/unit），帮助判断是否真的不收集。",
     )
     headers = [
         "Form", "变更类型", "字段名", "变更内容", "置信度",
-        "Protocol字段描述", "映射字段名", "映射置信度",
         "来源定位", "原文片段", "审核结果",
     ]
     _add_header_row(ws, headers)
@@ -224,9 +216,6 @@ def _write_sheet2(ws, extraction):
                 c.field_name,
                 detail_str,
                 c.confidence,
-                getattr(c, "protocol_description", ""),
-                getattr(c, "mapped_field_name", ""),
-                getattr(c, "mapping_confidence", ""),
                 c.source_ref,
                 c.source_text,
                 "",
@@ -243,71 +232,33 @@ def _write_sheet2(ws, extraction):
 
 
 # ─────────────────────────────────────────────
-# Sheet 3：未知字段处理
+# Sheet 3：新建 Form 字段草稿
 # ─────────────────────────────────────────────
 
 def _write_sheet3(ws, extraction):
-    _add_desc_row(ws, "未知字段处理：无法自动归属的字段，请在\"指定归属\"列填写 Form 名称，或填写\"忽略\"")
-    headers = ["字段描述", "单位", "条件", "推测Form", "置信度", "来源定位", "原文片段", "指定归属"]
-    _add_header_row(ws, headers)
-
-    for f in extraction.unknown_findings:
-        if hasattr(f, "to_dict"):
-            row_data = [
-                f.description,
-                f.unit,
-                f.condition,
-                f.form_hint,
-                f.confidence,
-                f.source_ref,
-                f.source_text,
-                "",
-            ]
-        else:
-            row_data = [str(f), "", "", "", "", "", "", ""]
-        ws.append(row_data)
-
-        cur_row = ws.max_row
-        confidence = f.confidence if hasattr(f, "confidence") else "medium"
-        fill = _confidence_fill(confidence)
-        if fill:
-            ws.cell(cur_row, 5).fill = fill
-
-    _auto_width(ws)
-    ws.freeze_panes = "A3"
-
-
-# ─────────────────────────────────────────────
-# Sheet 4：新建 Form 字段草稿
-# ─────────────────────────────────────────────
-
-def _write_sheet4(ws, extraction):
-    _add_desc_row(ws, "新建Form字段草稿：模板中不存在的新 Form 字段定义，请在审核结果列填写：✓确认 / ✗删除 / 直接填写修改内容")
-    headers = ["Form名称", "字段名", "Label", "DataType", "单位", "Values", "置信度", "来源定位", "原文", "审核结果"]
+    _add_desc_row(
+        ws,
+        "新建Form字段草稿：模板中不存在的新 Form，请审核字段定义草稿。"
+        "审核结果列填写：✓确认 / ✗删除 / 直接填写修改内容。",
+    )
+    headers = ["Form名称", "字段名", "Label", "DataType", "单位", "Values", "来源定位", "原文", "审核结果"]
     _add_header_row(ws, headers)
 
     for form_draft in extraction.study_specific_forms:
         form_name = form_draft.get("form_name", "")
-        for field in form_draft.get("fields", []):
-            confidence = field.get("confidence", "medium")
+        for fld in form_draft.get("fields", []):
             row_data = [
                 form_name,
-                field.get("field_name", ""),
-                field.get("label", ""),
-                field.get("data_type", ""),
-                field.get("unit", ""),
-                field.get("values", ""),
-                confidence,
-                field.get("source_ref", ""),
-                field.get("source_text", ""),
+                fld.get("field_name", ""),
+                fld.get("label", ""),
+                fld.get("data_type", ""),
+                fld.get("units", fld.get("unit", "")),
+                fld.get("values", ""),
+                fld.get("source_ref", ""),
+                fld.get("source_text", ""),
                 "",
             ]
             ws.append(row_data)
-
-            cur_row = ws.max_row
-            fill = _confidence_fill(confidence)
-            if fill:
-                ws.cell(cur_row, 7).fill = fill
 
     _auto_width(ws)
     ws.freeze_panes = "A3"

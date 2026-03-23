@@ -3,7 +3,7 @@ from typing import Optional
 
 
 # ─────────────────────────────────────────────
-# Form 提取结果（含溯源）
+# Form 提取结果（Phase 1，含溯源）
 # ─────────────────────────────────────────────
 
 @dataclass
@@ -28,11 +28,11 @@ class FormFinding:
 @dataclass
 class FormMapping:
     """Protocol Form → 模板库文件的映射结果"""
-    protocol_form: str = ""             # Protocol 中的原始 Form 名称
+    protocol_form: str = ""
     matched_templates: list = field(default_factory=list)  # 匹配到的模板文件名列表（可多个）
     is_new: bool = False                # True = 模板库没有，需新建
     confidence: str = "medium"          # "high" / "medium" / "low"
-    reason: str = ""                    # LLM 的匹配理由说明
+    reason: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -47,11 +47,11 @@ class FormMapping:
 @dataclass
 class FormMappingResult:
     """Form 级映射结果汇总"""
-    mappings: list = field(default_factory=list)     # 全部映射结果 list[FormMapping]
-    high: list = field(default_factory=list)         # 直接使用 list[FormMapping]
-    medium: list = field(default_factory=list)       # 建议人工确认 list[FormMapping]
-    low: list = field(default_factory=list)          # 必须人工确认 list[FormMapping]
-    new_forms: list = field(default_factory=list)    # 需新建（is_new=True） list[FormMapping]
+    mappings: list = field(default_factory=list)     # list[FormMapping]
+    high: list = field(default_factory=list)
+    medium: list = field(default_factory=list)
+    low: list = field(default_factory=list)
+    new_forms: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -64,51 +64,70 @@ class FormMappingResult:
 
 
 # ─────────────────────────────────────────────
-# 字段级映射结果
+# Phase 2：差异信号（新设计）
 # ─────────────────────────────────────────────
 
 @dataclass
-class FieldMapping:
-    """Protocol 字段描述 → 模板 field_name 的映射结果"""
-    protocol_description: str = ""     # Protocol 中的原始字段描述
-    matched_field_name: str = ""       # 匹配到的模板 field_name，无匹配则空字符串
-    is_new: bool = False               # True = 模板没有此字段，需 append
-    confidence: str = "medium"         # "high" / "medium" / "low"
-    reason: str = ""                   # LLM 的匹配理由
-    # 保留原始 FieldFinding 的溯源信息
-    source_ref: str = ""
-    source_text: str = ""
+class DiffSignal:
+    """
+    Protocol 相对于模板的差异信号。
+    以模板字段为基准，只记录 Protocol 中有明确原文依据的例外描述。
+    """
+    diff_type: str = ""     # "exclude" / "append" / "override" / "condition"
+
+    # exclude：模板有，Protocol 明确不收集 → field_ref = 模板 field_name
+    # append：Protocol 要求收集，模板没有  → field_ref = 临时命名（大写）
+    # override：字段存在但属性有差异       → field_ref = 模板 field_name
+    # condition：字段收集有特殊条件        → field_ref = 模板 field_name
+    field_ref: str = ""
+
+    detail: dict = field(default_factory=dict)
+    # append:    {"description": "Body Weight", "unit": "kg", "condition": ""}
+    # override:  {"attribute": "units", "from": "", "to": "mmHg"}
+    # condition: {"condition": "Females of childbearing potential only"}
+    # exclude:   {}
+
+    confidence: str = "medium"  # "high" / "medium" / "low"
+    source_ref: str = ""        # PDF: "第45页" | docx: "章节标题 > 段落序号"
+    source_text: str = ""       # 原文引用，禁止改写
 
     def to_dict(self) -> dict:
         return {
-            "protocol_description": self.protocol_description,
-            "matched_field_name": self.matched_field_name,
-            "is_new": self.is_new,
+            "diff_type": self.diff_type,
+            "field_ref": self.field_ref,
+            "detail": self.detail,
             "confidence": self.confidence,
-            "reason": self.reason,
             "source_ref": self.source_ref,
             "source_text": self.source_text,
         }
 
 
 @dataclass
-class FieldMappingResult:
-    """字段级映射结果汇总"""
+class FormDiffResult:
+    """一个 Form 的所有差异信号汇总"""
     form_name: str = ""
-    mappings: list = field(default_factory=list)     # 全部映射结果 list[FieldMapping]
-    matched: list = field(default_factory=list)      # is_new=False，用于 exclude/override 判断
-    unmatched: list = field(default_factory=list)    # is_new=True，直接进入 append 列表
-    ambiguous: list = field(default_factory=list)    # confidence=low，进入审核表人工处理
+    template_file: str = ""             # 对应的模板文件名
+    diff_signals: list = field(default_factory=list)   # list[DiffSignal]，全部
+    excludes: list = field(default_factory=list)        # list[DiffSignal]
+    appends: list = field(default_factory=list)         # list[DiffSignal]
+    overrides: list = field(default_factory=list)       # list[DiffSignal]
+    conditions: list = field(default_factory=list)      # list[DiffSignal]
 
     def to_dict(self) -> dict:
         return {
             "form_name": self.form_name,
-            "mappings": [m.to_dict() for m in self.mappings],
-            "matched": [m.to_dict() for m in self.matched],
-            "unmatched": [m.to_dict() for m in self.unmatched],
-            "ambiguous": [m.to_dict() for m in self.ambiguous],
+            "template_file": self.template_file,
+            "diff_signals": [s.to_dict() for s in self.diff_signals],
+            "excludes": [s.to_dict() for s in self.excludes],
+            "appends": [s.to_dict() for s in self.appends],
+            "overrides": [s.to_dict() for s in self.overrides],
+            "conditions": [s.to_dict() for s in self.conditions],
         }
 
+
+# ─────────────────────────────────────────────
+# 章节模型
+# ─────────────────────────────────────────────
 
 @dataclass
 class Chapter:
@@ -142,6 +161,10 @@ class ChapterContent:
         }
 
 
+# ─────────────────────────────────────────────
+# 研究基本信息
+# ─────────────────────────────────────────────
+
 @dataclass
 class StudyInfo:
     """研究基本信息"""
@@ -163,46 +186,23 @@ class StudyInfo:
         }
 
 
-@dataclass
-class FieldFinding:
-    """单条字段提取结果（含溯源）"""
-    description: str = ""       # 字段描述，如 "Systolic Blood Pressure"
-    unit: str = ""              # 单位，无则空字符串
-    condition: str = ""         # 特殊条件，如 "after 5 min rest"，无则空字符串
-    form_hint: str = ""         # 推测的 Form 归属，无法判断则空字符串
-    confidence: str = "medium"  # "high" / "medium" / "low"
-    source_ref: str = ""        # PDF: "第45页" | docx: "6.2 Vital Signs > 段落3"
-    source_text: str = ""       # 原文片段，直接引用原文，禁止改写
-    assigned_form: str = ""     # 归并后的 Form（由 aggregator 填写）
-
-    def to_dict(self) -> dict:
-        return {
-            "description": self.description,
-            "unit": self.unit,
-            "condition": self.condition,
-            "form_hint": self.form_hint,
-            "confidence": self.confidence,
-            "source_ref": self.source_ref,
-            "source_text": self.source_text,
-            "assigned_form": self.assigned_form,
-        }
-
+# ─────────────────────────────────────────────
+# 字段变更（aggregator 输出）
+# ─────────────────────────────────────────────
 
 @dataclass
 class FieldChange:
-    """字段变更（对比模板后）"""
+    """字段变更（DiffSignal → FieldChange 转换后的最终输出）"""
     change_type: str = ""   # "exclude" / "append" / "override"
-    field_name: str = ""    # 对应模板的 field_name
-    detail: dict = field(default_factory=dict)  # append/override 时的具体内容；exclude 时为模板字段上下文
-    reason: str = ""        # 变更原因
+    field_name: str = ""    # 对应模板的 field_name（append 为新字段名）
+    detail: dict = field(default_factory=dict)
+    # exclude:  模板字段上下文 {label, data_type, units}
+    # append:   完整字段定义 {field_name, label, data_type, units, values, include_field_oid}
+    # override: 属性差异 {attribute, from, to} 或条件 {attribute: "notes", value: "..."}
+    reason: str = ""
     confidence: str = "medium"
-    # ── Protocol 侧溯源 ──
-    protocol_description: str = ""  # 触发本条变更的原始 Protocol 字段描述（append/override 有；exclude 无）
-    source_ref: str = ""            # Protocol 原文位置（append/override 有；exclude 无）
-    source_text: str = ""           # Protocol 原文片段（append/override 有；exclude 无）
-    # ── 映射溯源 ──
-    mapped_field_name: str = ""      # 映射模块B匹配到的 field_name
-    mapping_confidence: str = ""     # 字段映射本身的置信度
+    source_ref: str = ""
+    source_text: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -211,24 +211,24 @@ class FieldChange:
             "detail": self.detail,
             "reason": self.reason,
             "confidence": self.confidence,
-            "protocol_description": self.protocol_description,
             "source_ref": self.source_ref,
             "source_text": self.source_text,
-            "mapped_field_name": self.mapped_field_name,
-            "mapping_confidence": self.mapping_confidence,
         }
 
+
+# ─────────────────────────────────────────────
+# 最终汇总
+# ─────────────────────────────────────────────
 
 @dataclass
 class ProtocolExtraction:
     """最终汇总"""
     study_info: StudyInfo = field(default_factory=StudyInfo)
-    fixed_forms: list = field(default_factory=list)       # 来源A，hardcode（list[str]）
-    extracted_forms: list = field(default_factory=list)   # 来源B，Phase 1 提取（list[str]）
+    fixed_forms: list = field(default_factory=list)              # 来源A，hardcode（list[str]）
+    extracted_forms: list = field(default_factory=list)          # 来源B，Phase 1 提取（list[str]）
     extracted_form_findings: list = field(default_factory=list)  # 来源B，含溯源（list[FormFinding]）
-    field_changes: dict = field(default_factory=dict)     # form_name → list[FieldChange]
-    study_specific_forms: list = field(default_factory=list)  # 模板没有的新 Form
-    unknown_findings: list = field(default_factory=list)  # 无法归属，待人工处理
+    field_changes: dict = field(default_factory=dict)            # form_name → list[FieldChange]
+    study_specific_forms: list = field(default_factory=list)     # 模板没有的新 Form（list[dict]）
 
     def to_dict(self) -> dict:
         return {
@@ -244,8 +244,4 @@ class ProtocolExtraction:
                 for k, v in self.field_changes.items()
             },
             "study_specific_forms": self.study_specific_forms,
-            "unknown_findings": [
-                f.to_dict() if hasattr(f, "to_dict") else f
-                for f in self.unknown_findings
-            ],
         }

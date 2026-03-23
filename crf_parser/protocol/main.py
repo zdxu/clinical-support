@@ -14,7 +14,7 @@ Protocol → CRF 信息提取 Pipeline 主入口
   # 只跑 Phase 1 + Form 级映射，先确认 Form 与模板的映射关系
   python protocol/main.py --input ... --phase 1
 
-  # Phase 1 已确认，只跑 Phase 2 + 字段映射 + 归并
+  # Phase 1 已确认，只跑 Phase 2（差异信号提取）+ 归并
   python protocol/main.py --input ... --phase 2
 
   # PDF 专用：跳过截图，使用缓存
@@ -34,7 +34,6 @@ from rich.console import Console
 load_dotenv()
 console = Console()
 
-# 确保 crf_parser 根目录在 sys.path
 _HERE = Path(__file__).resolve().parent.parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
@@ -45,7 +44,7 @@ def main():
     parser.add_argument("--input", required=True, help="输入 Protocol 文件（PDF 或 docx）")
     parser.add_argument("--toc", default=None, help="兜底 TOC JSON 文件路径")
     parser.add_argument("--phase", type=int, default=0, choices=[0, 1, 2],
-                        help="运行阶段：0=完整, 1=Phase1+Form映射（等待人工确认）, 2=Phase2+字段映射+归并")
+                        help="运行阶段：0=完整, 1=Phase1+Form映射（等待人工确认）, 2=Phase2+差异信号+归并")
     parser.add_argument("--use-cache", action="store_true", help="PDF 截图使用缓存")
     parser.add_argument("--output-base", default="output/protocol", help="输出根目录")
     parser.add_argument("--crf-history", default="output/crf/history", help="CRF history 模板库目录")
@@ -69,7 +68,6 @@ def main():
     console.print(f"输入文件: [cyan]{input_path}[/cyan]")
     console.print(f"文件类型: [cyan]{ext}[/cyan]\n")
 
-    # ── 初始化 OpenAI client ──
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "your_api_key_here":
         console.print("[red]错误：请在 .env 中设置 OPENAI_API_KEY[/red]")
@@ -117,7 +115,7 @@ def main():
     console.print(f"  indication:   [cyan]{study_info.indication}[/cyan]")
     console.print(f"  → {study_info_path}\n")
 
-    # ── Step d: Phase 1 ──
+    # ── Step d: Phase 1 - Form 清单 ──
     from protocol.phase1_form_scanner import extract_forms_list, FIXED_FORMS
     from protocol.aggregator import list_history_forms
 
@@ -125,7 +123,6 @@ def main():
     console.print(f"[dim]history 模板库：{len(history_forms)} 个 Form[/dim]")
 
     if args.phase in (0, 1):
-        # extract_forms_list 现在返回 list[FormFinding]（含溯源）
         extracted_form_findings = extract_forms_list(
             chapters=chapters,
             docx_path=str(input_path) if ext == ".docx" else None,
@@ -135,19 +132,17 @@ def main():
         )
         extracted_forms = [ff.form_name for ff in extracted_form_findings]
 
-        # 保存 forms_list.json（含溯源信息）
         forms_list_path = output_base / "forms_list.json"
-        all_forms = FIXED_FORMS + extracted_forms
         with open(forms_list_path, "w", encoding="utf-8") as f:
             json.dump({
                 "fixed_forms": FIXED_FORMS,
                 "extracted_forms": extracted_forms,
-                "all_forms": all_forms,
+                "all_forms": FIXED_FORMS + extracted_forms,
                 "extracted_form_findings": [ff.to_dict() for ff in extracted_form_findings],
             }, f, ensure_ascii=False, indent=2)
         console.print(f"\n[green]Form 清单已保存：{forms_list_path}[/green]")
 
-        # ── [新增] Step f: Form 级语义映射 ──
+        # ── Step e: Form 级语义映射 ──
         console.print("\n[bold cyan]── Form 级语义映射 ──[/bold cyan]")
         from protocol.form_mapper import build_template_summary, map_forms, save_form_mapping
 
@@ -177,11 +172,9 @@ def main():
         with open(forms_list_path, "r", encoding="utf-8") as f:
             forms_data = json.load(f)
         extracted_forms = forms_data.get("extracted_forms", [])
-        all_forms = forms_data.get("all_forms", FIXED_FORMS + extracted_forms)
         extracted_form_findings = _load_form_findings(output_base)
-        console.print(f"[cyan]读取已确认 Form 清单：{len(all_forms)} 个[/cyan]")
+        console.print(f"[cyan]读取已确认 Form 清单：{len(extracted_forms)} 个[/cyan]")
 
-        # 读取已有的 Form 映射结果（若存在）
         from protocol.form_mapper import load_form_mapping, build_template_summary, map_forms, save_form_mapping
         form_mapping_result = load_form_mapping(str(output_base))
         if not form_mapping_result.mappings:
@@ -194,45 +187,25 @@ def main():
             )
             save_form_mapping(form_mapping_result, str(output_base))
 
-    # ── Step e: Phase 2 ──
-    from protocol.phase2_field_scanner import extract_all_field_findings
-    all_findings = extract_all_field_findings(
+    # ── Step f: Phase 2 - 差异信号提取 ──
+    from protocol.phase2_field_scanner import (
+        extract_all_diff_signals, save_diff_signals
+    )
+
+    all_diff_results = extract_all_diff_signals(
+        form_mapping_result=form_mapping_result,
         chapters=chapters,
+        history_dir=args.crf_history,
         docx_path=str(input_path) if ext == ".docx" else None,
         image_paths=image_paths if ext == ".pdf" else None,
         file_type=ext.lstrip("."),
         client=client,
     )
+    save_diff_signals(all_diff_results, str(output_base))
 
-    # 按章节保存原始结果
-    _save_findings_by_form(all_findings, output_base)
-
-    # ── Step f2: 归并 ──
-    from protocol.aggregator import assign_findings_to_forms
-    all_form_names = FIXED_FORMS + extracted_forms
-    form_findings_map = assign_findings_to_forms(all_form_names, all_findings, client)
-
-    # ── [新增] Step g1: 字段级语义映射 ──
-    console.print("\n[bold cyan]── 字段级语义映射 ──[/bold cyan]")
-    from protocol.field_mapper import map_all_fields, save_field_mappings
-
-    # 构建按 assigned_form 分组的字典（供字段映射使用）
-    assigned_findings_map = {}
-    for form_name, findings in form_findings_map.items():
-        if form_name != "__UNKNOWN__":
-            assigned_findings_map[form_name] = findings
-
-    field_mapping_results = map_all_fields(
-        form_mapping_result=form_mapping_result,
-        field_findings=assigned_findings_map,
-        history_dir=args.crf_history,
-        client=client,
-    )
-    save_field_mappings(field_mapping_results, str(output_base))
-
-    # ── Step g2: 模板对比（基于映射结果） ──
-    from protocol.aggregator import compare_with_template, compare_with_template_legacy, load_history_template
-    console.print("\n[bold cyan]── 模板对比 ──[/bold cyan]")
+    # ── Step g: 差异信号 → 字段变更 ──
+    from protocol.aggregator import diff_to_field_changes, load_history_template
+    console.print("\n[bold cyan]── 字段变更生成 ──[/bold cyan]")
 
     from protocol.models import ProtocolExtraction
     extraction = ProtocolExtraction(
@@ -242,69 +215,45 @@ def main():
         extracted_form_findings=extracted_form_findings,
     )
 
-    for form_name in extracted_forms:
-        findings = form_findings_map.get(form_name, [])
-
-        # 确定模板文件：优先使用映射结果，降级使用历史文件名匹配
+    for form_name, form_diff in all_diff_results.items():
         template_fields = _load_template_for_form(form_name, form_mapping_result, args.crf_history)
+        changes = diff_to_field_changes(form_diff, template_fields, client)
+        extraction.field_changes[form_name] = changes
 
-        if template_fields:
-            field_mapping_result_for_form = field_mapping_results.get(form_name)
+        exc = sum(1 for c in changes if c.change_type == "exclude")
+        app = sum(1 for c in changes if c.change_type == "append")
+        ovr = sum(1 for c in changes if c.change_type == "override")
+        console.print(f"  {form_name:<30} → exclude:{exc}  append:{app}  override:{ovr}")
 
-            if field_mapping_result_for_form:
-                # 使用映射驱动的模板对比
-                changes = compare_with_template(
-                    form_name,
-                    field_mapping_result_for_form,
-                    template_fields,
-                    client,
-                )
-            else:
-                # 降级：使用旧版直接对比
-                changes = compare_with_template_legacy(form_name, findings, template_fields, client)
+        changes_dir = output_base / "field_changes"
+        changes_dir.mkdir(exist_ok=True)
+        fn = re.sub(r"[^a-z0-9]+", "_", form_name.lower()).strip("_")
+        with open(changes_dir / f"{fn}.json", "w", encoding="utf-8") as f:
+            json.dump([c.to_dict() for c in changes], f, ensure_ascii=False, indent=2)
 
-            extraction.field_changes[form_name] = changes
-            exc = sum(1 for c in changes if c.change_type == "exclude")
-            app = sum(1 for c in changes if c.change_type == "append")
-            ovr = sum(1 for c in changes if c.change_type == "override")
-            console.print(f"  {form_name:<30} → exclude:{exc}  append:{app}  override:{ovr}")
-
-            # 保存 field_changes
-            changes_dir = output_base / "field_changes"
-            changes_dir.mkdir(exist_ok=True)
-            fn = re.sub(r"[^a-z0-9]+", "_", form_name.lower()).strip("_")
-            changes_path = changes_dir / f"{fn}.json"
-            with open(changes_path, "w", encoding="utf-8") as f:
-                json.dump([c.to_dict() for c in changes], f, ensure_ascii=False, indent=2)
-
-    # 未知字段
-    extraction.unknown_findings = form_findings_map.get("__UNKNOWN__", [])
-
-    # ── Step h: 新建 Form 草稿 ──
+    # ── Step h: 新建 Form 字段草稿 ──
     from protocol.aggregator import handle_unmatched_forms
     console.print("\n[bold cyan]── 新建 Form 字段草稿 ──[/bold cyan]")
 
-    # 新建 Form：在 form_mapping_result 中 is_new=True 的 Form
     new_form_names = [m.protocol_form for m in form_mapping_result.new_forms]
+    if new_form_names:
+        # 收集新建 Form 相关的章节文本，作为 LLM 生成草稿的上下文
+        new_form_context = _collect_chapter_texts(new_form_names, chapters, ext,
+                                                   str(input_path) if ext == ".docx" else None)
+        study_specific = handle_unmatched_forms(new_form_names, new_form_context, client)
+        extraction.study_specific_forms = study_specific
 
-    study_specific = handle_unmatched_forms(
-        extracted_forms=new_form_names if new_form_names else extracted_forms,
-        history_forms=history_forms,
-        form_findings_map=form_findings_map,
-        client=client,
-    )
-    extraction.study_specific_forms = study_specific
+        ss_dir = output_base / "study_specific_forms"
+        ss_dir.mkdir(exist_ok=True)
+        for draft in study_specific:
+            fn = re.sub(r"[^a-z0-9]+", "_", draft["form_name"].lower()).strip("_")
+            with open(ss_dir / f"{fn}.json", "w", encoding="utf-8") as f:
+                json.dump(draft, f, ensure_ascii=False, indent=2)
+            console.print(f"  {draft['form_name']} → {len(draft.get('fields', []))} 个字段草稿")
+    else:
+        console.print("  （无需新建 Form）")
 
-    # 保存
-    ss_dir = output_base / "study_specific_forms"
-    ss_dir.mkdir(exist_ok=True)
-    for draft in study_specific:
-        fn = re.sub(r"[^a-z0-9]+", "_", draft["form_name"].lower()).strip("_")
-        with open(ss_dir / f"{fn}.json", "w", encoding="utf-8") as f:
-            json.dump(draft, f, ensure_ascii=False, indent=2)
-        console.print(f"  {draft['form_name']} → {len(draft.get('fields', []))} 个字段草稿")
-
-    # ── Step i: 审核表（含 Sheet 0） ──
+    # ── Step i: 审核表 ──
     console.print("\n[bold cyan]── 生成审核表 ──[/bold cyan]")
     from protocol.checklist_writer import generate_checklist
     checklist_path = generate_checklist(
@@ -320,11 +269,12 @@ def main():
         json.dump(extraction.to_dict(), f, ensure_ascii=False, indent=2)
 
     # ── 最终汇总 ──
+    total_changes = sum(len(v) for v in extraction.field_changes.values())
     console.print(f"\n[bold cyan]── 最终汇总 ──[/bold cyan]")
     console.print(f"  Form 清单：固定 {len(FIXED_FORMS)} + 提取 {len(extracted_forms)} = {len(FIXED_FORMS) + len(extracted_forms)} 个")
-    console.print(f"  字段描述：{len(all_findings)} 条")
-    console.print(f"  未知字段：{len(extraction.unknown_findings)} 条")
-    console.print(f"  新建Form：{len(study_specific)} 个")
+    console.print(f"  差异信号：{sum(len(r.diff_signals) for r in all_diff_results.values())} 条")
+    console.print(f"  字段变更：{total_changes} 条")
+    console.print(f"  新建Form：{len(extraction.study_specific_forms)} 个")
     console.print(
         f"  Form映射：high:{len(form_mapping_result.high)}  "
         f"medium:{len(form_mapping_result.medium)}  "
@@ -336,6 +286,10 @@ def main():
     console.print(f"  汇总:   [cyan]{extraction_path}[/cyan]")
 
 
+# ─────────────────────────────────────────────
+# 工具函数
+# ─────────────────────────────────────────────
+
 def _load_form_findings(output_base: Path) -> list:
     """从 forms_list.json 读取 extracted_form_findings（list[FormFinding]）"""
     from protocol.models import FormFinding
@@ -344,26 +298,20 @@ def _load_form_findings(output_base: Path) -> list:
         return []
     with open(forms_list_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    findings = []
-    for item in data.get("extracted_form_findings", []):
-        findings.append(FormFinding(
+    return [
+        FormFinding(
             form_name=item.get("form_name", ""),
             source_ref=item.get("source_ref", ""),
             source_text=item.get("source_text", ""),
-        ))
-    return findings
+        )
+        for item in data.get("extracted_form_findings", [])
+    ]
 
 
 def _load_template_for_form(form_name: str, form_mapping_result, history_dir: str) -> list:
-    """
-    根据 Form 映射结果加载模板字段。
-    优先使用映射结果中的 matched_templates，降级使用 aggregator 的文件名匹配。
-    一对多时合并所有模板字段。
-    """
+    """根据 Form 映射结果加载模板字段，一对多时合并所有模板字段。"""
     import yaml
-    from pathlib import Path
 
-    # 从映射结果中查找
     matched_templates = []
     for m in form_mapping_result.mappings:
         if m.protocol_form == form_name and not m.is_new:
@@ -384,42 +332,33 @@ def _load_template_for_form(form_name: str, form_mapping_result, history_dir: st
         if all_fields:
             return all_fields
 
-    # 降级：使用旧版文件名匹配
     from protocol.aggregator import load_history_template
     return load_history_template(form_name, history_dir)
 
 
-def _print_form_match(extracted_forms: list, history_forms: list):
-    """打印 Form 与模板库的匹配情况"""
-    from protocol.aggregator import _fuzzy_match_form
-    console.print("\n[bold cyan]── Form 与模板库匹配 ──[/bold cyan]")
-    matched = 0
-    unmatched = 0
-    for form in extracted_forms:
-        m = _fuzzy_match_form(form, history_forms)
-        if m:
-            console.print(f"  [green]✓[/green] {form:<30} → 匹配: {m}")
-            matched += 1
-        else:
-            console.print(f"  [yellow]○[/yellow] {form:<30} → 无模板（将新建）")
-            unmatched += 1
-    console.print(f"\n  来源B Form：{len(extracted_forms)} 个 | 模板匹配：{matched} 个 | 未匹配（新建）：{unmatched} 个")
+def _collect_chapter_texts(form_names: list, chapters: list, file_type: str, docx_path: str) -> dict:
+    """为新建 Form 收集相关章节文本，返回 dict[form_name, list[str]]"""
+    result = {name: [] for name in form_names}
 
+    for form_name in form_names:
+        keywords = form_name.lower().split()
+        matched = [
+            c for c in chapters
+            if any(kw in c.title.lower() for kw in keywords if len(kw) > 3)
+        ]
+        if not matched:
+            matched = chapters  # 兜底
 
-def _save_findings_by_form(all_findings: list, output_base: Path):
-    """将原始字段描述按 form_hint 分类保存"""
-    findings_dir = output_base / "field_findings"
-    findings_dir.mkdir(exist_ok=True)
+        for chapter in matched:
+            if file_type == "docx" and docx_path:
+                try:
+                    from protocol.docx_extractor import extract_chapter_content
+                    content = extract_chapter_content(docx_path, chapter)
+                    result[form_name].append(f"=== {chapter.title} ===\n{content.full_text}")
+                except Exception:
+                    pass
 
-    by_form = {}
-    for f in all_findings:
-        key = f.form_hint if f.form_hint else "__no_hint__"
-        by_form.setdefault(key, []).append(f.to_dict())
-
-    for form_name, items in by_form.items():
-        fn = re.sub(r"[^a-z0-9]+", "_", form_name.lower()).strip("_") or "no_hint"
-        with open(findings_dir / f"{fn}.json", "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+    return result
 
 
 if __name__ == "__main__":
