@@ -231,16 +231,20 @@ def main():
         with open(changes_dir / f"{fn}.json", "w", encoding="utf-8") as f:
             json.dump([c.to_dict() for c in changes], f, ensure_ascii=False, indent=2)
 
-    # ── Step h: 新建 Form 字段草稿 ──
-    from protocol.aggregator import handle_unmatched_forms
+    # ── Step h: 新建 Form 字段草稿（三种情况 A/B/C） ──
+    from protocol.aggregator import handle_new_forms
     console.print("\n[bold cyan]── 新建 Form 字段草稿 ──[/bold cyan]")
 
-    new_form_names = [m.protocol_form for m in form_mapping_result.new_forms]
-    if new_form_names:
-        # 收集新建 Form 相关的章节文本，作为 LLM 生成草稿的上下文
-        new_form_context = _collect_chapter_texts(new_form_names, chapters, ext,
-                                                   str(input_path) if ext == ".docx" else None)
-        study_specific = handle_unmatched_forms(new_form_names, new_form_context, client)
+    new_form_mappings = form_mapping_result.new_forms
+    if new_form_mappings:
+        study_specific = handle_new_forms(
+            new_form_mappings=new_form_mappings,
+            chapters=chapters,
+            docx_path=str(input_path) if ext == ".docx" else None,
+            image_paths=image_paths if ext == ".pdf" else None,
+            file_type=ext.lstrip("."),
+            client=client,
+        )
         extraction.study_specific_forms = study_specific
 
         ss_dir = output_base / "study_specific_forms"
@@ -249,7 +253,6 @@ def main():
             fn = re.sub(r"[^a-z0-9]+", "_", draft["form_name"].lower()).strip("_")
             with open(ss_dir / f"{fn}.json", "w", encoding="utf-8") as f:
                 json.dump(draft, f, ensure_ascii=False, indent=2)
-            console.print(f"  {draft['form_name']} → {len(draft.get('fields', []))} 个字段草稿")
     else:
         console.print("  （无需新建 Form）")
 
@@ -335,30 +338,6 @@ def _load_template_for_form(form_name: str, form_mapping_result, history_dir: st
     from protocol.aggregator import load_history_template
     return load_history_template(form_name, history_dir)
 
-
-def _collect_chapter_texts(form_names: list, chapters: list, file_type: str, docx_path: str) -> dict:
-    """为新建 Form 收集相关章节文本，返回 dict[form_name, list[str]]"""
-    result = {name: [] for name in form_names}
-
-    for form_name in form_names:
-        keywords = form_name.lower().split()
-        matched = [
-            c for c in chapters
-            if any(kw in c.title.lower() for kw in keywords if len(kw) > 3)
-        ]
-        if not matched:
-            matched = chapters  # 兜底
-
-        for chapter in matched:
-            if file_type == "docx" and docx_path:
-                try:
-                    from protocol.docx_extractor import extract_chapter_content
-                    content = extract_chapter_content(docx_path, chapter)
-                    result[form_name].append(f"=== {chapter.title} ===\n{content.full_text}")
-                except Exception:
-                    pass
-
-    return result
 
 
 if __name__ == "__main__":

@@ -238,27 +238,57 @@ def _write_sheet2(ws, extraction):
 def _write_sheet3(ws, extraction):
     _add_desc_row(
         ws,
-        "新建Form字段草稿：模板中不存在的新 Form，请审核字段定义草稿。"
+        "新建Form字段草稿：模板库中不存在的新 Form，请审核字段定义草稿。"
+        "情况A=基于标准工具（LLM行业知识生成），"
+        "情况B=从Protocol章节提取，"
+        "情况C=无Protocol描述（字段列全空，请DM手动填写）。"
         "审核结果列填写：✓确认 / ✗删除 / 直接填写修改内容。",
     )
-    headers = ["Form名称", "字段名", "Label", "DataType", "单位", "Values", "来源定位", "原文", "审核结果"]
+    headers = [
+        "Form名称", "情况", "标准工具",
+        "字段名", "Label", "DataType", "单位", "Values",
+        "置信度", "来源定位", "原文", "审核结果",
+    ]
     _add_header_row(ws, headers)
 
     for form_draft in extraction.study_specific_forms:
         form_name = form_draft.get("form_name", "")
-        for fld in form_draft.get("fields", []):
-            row_data = [
-                form_name,
-                fld.get("field_name", ""),
-                fld.get("label", ""),
-                fld.get("data_type", ""),
-                fld.get("units", fld.get("unit", "")),
-                fld.get("values", ""),
-                fld.get("source_ref", ""),
-                fld.get("source_text", ""),
-                "",
-            ]
-            ws.append(row_data)
+        situation = form_draft.get("situation", "")
+        standard = form_draft.get("standard") or ""
+        fields = form_draft.get("fields", [])
+
+        if not fields:
+            # 情况C：无字段，写一行标注（字段列全空）
+            ws.append([form_name, situation, standard, "", "", "", "", "", "", "", "", ""])
+            cur_row = ws.max_row
+            # 情况C 行用淡灰底色提示 DM 需要手填
+            from openpyxl.styles import PatternFill
+            fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+            for col in range(1, 13):
+                ws.cell(cur_row, col).fill = fill
+        else:
+            for fld in fields:
+                confidence = fld.get("confidence", "")
+                row_data = [
+                    form_name,
+                    situation,
+                    standard,
+                    fld.get("field_name", ""),
+                    fld.get("label", ""),
+                    fld.get("data_type", ""),
+                    fld.get("units", fld.get("unit", "")),
+                    fld.get("values", ""),
+                    confidence,
+                    fld.get("source_ref", ""),
+                    fld.get("source_text", ""),
+                    "",
+                ]
+                ws.append(row_data)
+
+                cur_row = ws.max_row
+                fill = _confidence_fill(confidence)
+                if fill:
+                    ws.cell(cur_row, 9).fill = fill
 
     _auto_width(ws)
     ws.freeze_panes = "A3"

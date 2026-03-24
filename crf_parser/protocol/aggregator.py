@@ -1,13 +1,14 @@
 """
-模块5：差异信号 → 字段变更
+模块5：差异信号 → 字段变更 + 新建 Form 字段草稿
 
-将 Phase 2 输出的 FormDiffResult（DiffSignal 列表）转换为 FieldChange 列表。
-大部分是纯逻辑转换，只有 append 类型需要一次 LLM 调用来补全字段定义。
+matched Form 路径：
+  diff_to_field_changes()  将 FormDiffResult 转换为 FieldChange 列表（主要是纯逻辑）
 
-还保留：
-  load_history_template()   加载模板字段
-  list_history_forms()      列出所有模板 Form
-  handle_unmatched_forms()  为无模板的新建 Form 生成字段草稿
+unmatched Form 路径（三种情况）：
+  handle_new_forms()
+    情况A：基于标准工具（RECIST/ECOG/量表等）→ LLM 行业知识生成字段
+    情况B：有 Protocol 章节描述 → 从章节提取字段列表
+    情况C：无任何描述 → 返回空字段列表，进入审核表供 DM 手填
 """
 
 import json
@@ -17,7 +18,9 @@ from pathlib import Path
 import yaml
 from rich.console import Console
 
-from .models import DiffSignal, FormDiffResult, FieldChange
+import base64
+
+from .models import DiffSignal, FormDiffResult, FieldChange, FormMapping, Chapter
 
 console = Console()
 
@@ -159,62 +162,299 @@ def _generate_field_def(signal: DiffSignal, template_fields: list, client) -> di
 
 
 # ─────────────────────────────────────────────
-# 新建 Form 字段草稿（无模板可对比时）
+# 新建 Form 字段草稿（三种情况）
 # ─────────────────────────────────────────────
 
-def handle_unmatched_forms(
-    new_form_names: list,
-    form_findings_map: dict,
-    client,
+def handle_new_forms(
+    new_form_mappings: list,
+    chapters: list,
+    docx_path: str = None,
+    image_paths: list = None,
+    file_type: str = "pdf",
+    client=None,
 ) -> list:
     """
-    对 Form 映射结果中 is_new=True 的 Form，用 LLM 生成完整字段定义草稿。
+    处理模板库中不存在的新建 Form（FormMapping.is_new=True）。
 
-    new_form_names: list[str]，需新建的 Form 名称列表
-    form_findings_map: dict[str, list]，各 Form 的相关章节文本（key=form_name）
+    三种情况：
+      情况A：基于标准工具（RECIST/ECOG/量表等）→ LLM 用行业知识生成字段
+      情况B：有 Protocol 章节描述 → 从相关章节提取字段列表
+      情况C：无任何描述 → 返回空字段列表，进入审核表供 DM 手填
+
+    new_form_mappings: list[FormMapping]，is_new=True 的映射结果
+    chapters: list[Chapter]，全部章节
+    docx_path / image_paths: 文档内容来源
+    file_type: "pdf" 或 "docx"
+    client: OpenAI client
 
     Returns:
-        list[dict]，每个元素含 form_name 和 fields 列表
+        list[dict]，每个元素含：
+          form_name, situation("A"/"B"/"C"), standard(str|None), fields(list)
     """
     results = []
 
-    for form_name in new_form_names:
-        context_texts = form_findings_map.get(form_name, [])
-        context_str = "\n\n".join(context_texts) if context_texts else "（无 Protocol 描述）"
-
-        prompt = (
-            f"根据以下 Protocol 描述，为 {form_name} 生成完整字段定义草稿。\n\n"
-            "字段格式参考（仅作示例）：\n"
-            '[{"field_name": "VSDAT", "label": "Visit Date", "data_type": "dd MMM yyyy", '
-            '"units": "", "values": "", "include_field_oid": "VSDAT", '
-            '"source_ref": "第X页", "source_text": "..."}]\n\n'
-            f"Protocol 关于此 Form 的描述：\n{context_str}\n\n"
-            "输出 JSON 数组，每个字段包含：field_name、label、data_type、units、values、"
-            "include_field_oid、source_ref、source_text。"
-        )
-
-        for attempt in range(3):
+    # 预建 PDF 页码映射
+    page_image_map = {}
+    if file_type == "pdf" and image_paths:
+        for path in image_paths:
+            stem = Path(path).stem
             try:
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    max_tokens=4096,
-                    messages=[
-                        {"role": "system", "content": "你是临床试验 CRF 设计专家，负责起草新 Form 的字段定义。只输出 JSON。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                )
-                raw = _strip_code_block(response.choices[0].message.content.strip())
-                fields = json.loads(raw)
-                results.append({"form_name": form_name, "fields": fields})
-                break
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(2)
-                else:
-                    console.print(f"[red]新建 Form 草稿失败 [{form_name}]：{e}[/red]")
-                    results.append({"form_name": form_name, "fields": []})
+                page_image_map[int(stem.split("_")[-1])] = path
+            except ValueError:
+                pass
+
+    for mapping in new_form_mappings:
+        form_name = mapping.protocol_form
+        console.print(f"\n  [cyan]{form_name}[/cyan]")
+
+        relevant = _get_relevant_chapters_for_new_form(form_name, chapters)
+
+        # ── 先判断是否基于标准工具 ──
+        standard = _detect_standard_tool(form_name, relevant, docx_path, file_type, client)
+
+        if standard:
+            # 情况A：标准工具
+            console.print(f"    情况A：标准工具 [{standard}]")
+            fields = _generate_fields_from_standard(
+                form_name, standard, relevant, docx_path, page_image_map, file_type, client
+            )
+            results.append({
+                "form_name": form_name,
+                "situation": "A",
+                "standard": standard,
+                "fields": fields,
+            })
+
+        elif relevant:
+            # 情况B：有 Protocol 章节描述
+            console.print(f"    情况B：从章节提取（{len(relevant)} 个相关章节）")
+            fields = _extract_fields_from_protocol(
+                form_name, relevant, docx_path, page_image_map, file_type, client
+            )
+            results.append({
+                "form_name": form_name,
+                "situation": "B",
+                "standard": None,
+                "fields": fields,
+            })
+
+        else:
+            # 情况C：无任何描述
+            console.print(f"    情况C：无章节描述，生成空模板")
+            results.append({
+                "form_name": form_name,
+                "situation": "C",
+                "standard": None,
+                "fields": [],
+            })
+
+        count = len(results[-1]["fields"])
+        label = {"A": "标准工具", "B": "章节提取", "C": "空模板（DM手填）"}[results[-1]["situation"]]
+        console.print(f"    → 情况{results[-1]['situation']}（{label}）：{count} 个字段草稿")
 
     return results
+
+
+def _detect_standard_tool(
+    form_name: str,
+    relevant_chapters: list,
+    docx_path: str,
+    file_type: str,
+    client,
+) -> str:
+    """
+    判断该 Form 是否基于某个标准工具（RECIST/ECOG/量表等）。
+    返回标准工具名称（如 "RECIST 1.1"），或空字符串表示不是。
+    """
+    if not relevant_chapters and not form_name:
+        return ""
+
+    # 从相关章节取最多 2000 字的上下文
+    context = _get_chapter_context(relevant_chapters, docx_path, file_type, max_chars=2000)
+
+    prompt = (
+        f"Form 名称：{form_name}\n\n"
+        f"Protocol 相关章节片段：\n{context or '（无章节内容）'}\n\n"
+        "问题：该 Form 的数据收集是否基于某个行业标准工具或量表？\n"
+        "（如 RECIST、ECOG、CTCAE、PGIC、SF-36、NRS、PHQ-9 等）\n\n"
+        "如果是，输出标准工具名称（例如 \"RECIST 1.1\"）。\n"
+        "如果不是，输出空字符串 \"\"。\n\n"
+        "只输出 JSON：{\"standard\": \"RECIST 1.1\"} 或 {\"standard\": \"\"}"
+    )
+
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=128,
+                messages=[
+                    {"role": "system", "content": "你是临床试验专家。只输出 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = _strip_code_block(response.choices[0].message.content.strip())
+            return json.loads(raw).get("standard", "")
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+    return ""
+
+
+def _generate_fields_from_standard(
+    form_name: str,
+    standard: str,
+    relevant_chapters: list,
+    docx_path: str,
+    page_image_map: dict,
+    file_type: str,
+    client,
+) -> list:
+    """情况A：用 LLM 行业知识生成基于标准工具的字段定义"""
+    context = _get_chapter_context(relevant_chapters, docx_path, file_type, max_chars=3000)
+
+    prompt = (
+        f"请根据 {standard} 生成 {form_name} 的完整标准字段定义。\n\n"
+        f"Protocol 上下文（作为参考）：\n{context or '（无）'}\n\n"
+        "输出 JSON 数组，每个字段包含：\n"
+        "field_name（大写）、label、data_type（如 $3/$5/Y/N/dd MMM yyyy）、"
+        "units、values（枚举值用逗号分隔，无则空）、include_field_oid、"
+        "source_ref（填 \"行业标准\" 或具体章节）、source_text（标准原文或协议引用）。\n\n"
+        "confidence 规则：\n"
+        "- \"high\"   = 标准规范明确定义的字段\n"
+        "- \"medium\" = 标准隐含，Protocol 未明确列出\n"
+        "- \"low\"    = 不确定，需人工决定\n\n"
+        "每个字段还需包含 confidence 字段。只输出 JSON 数组。"
+    )
+
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=4096,
+                messages=[
+                    {"role": "system", "content": "你是临床试验 CRF 设计专家，熟悉各类行业标准工具。只输出 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = _strip_code_block(response.choices[0].message.content.strip())
+            return json.loads(raw)
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+            else:
+                console.print(f"[red]情况A字段生成失败 [{form_name}]：{e}[/red]")
+    return []
+
+
+def _extract_fields_from_protocol(
+    form_name: str,
+    relevant_chapters: list,
+    docx_path: str,
+    page_image_map: dict,
+    file_type: str,
+    client,
+) -> list:
+    """情况B：从 Protocol 章节文本/图片中提取字段列表"""
+    system_prompt = (
+        "你是临床试验 CRF 设计专家。\n"
+        f"这是一个在历史模板库中不存在的新 Form：{form_name}。\n"
+        "请从 Protocol 描述中提取所有需要收集的字段，生成完整字段定义。\n\n"
+        "输出 JSON 数组，每个字段包含：\n"
+        "field_name（大写建议命名）、label、data_type、units、values、"
+        "include_field_oid、confidence（high/medium/low）、source_ref、source_text。\n"
+        "只输出 JSON 数组，不要其他文字。"
+    )
+
+    if file_type == "pdf":
+        # 收集图片
+        img_blocks = []
+        page_refs = []
+        for chapter in relevant_chapters:
+            if chapter.page_range:
+                for pg in range(chapter.page_range[0], chapter.page_range[1] + 1):
+                    if pg in page_image_map:
+                        try:
+                            with open(page_image_map[pg], "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode()
+                            img_blocks.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                            })
+                            page_refs.append(f"第{pg}页")
+                        except Exception:
+                            pass
+        user_content = img_blocks + [{
+            "type": "text",
+            "text": f"Form 名称：{form_name}\n章节：{', '.join(c.title for c in relevant_chapters)}\n页码：{', '.join(page_refs)}",
+        }]
+    else:
+        text = _get_chapter_context(relevant_chapters, docx_path, file_type)
+        user_content = f"Form 名称：{form_name}\n\n{text}"
+
+    for attempt in range(3):
+        try:
+            messages = [{"role": "system", "content": system_prompt}]
+            if isinstance(user_content, str):
+                messages.append({"role": "user", "content": user_content})
+            else:
+                messages.append({"role": "user", "content": user_content})
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=4096,
+                messages=messages,
+            )
+            raw = _strip_code_block(response.choices[0].message.content.strip())
+            return json.loads(raw)
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+            else:
+                console.print(f"[red]情况B字段提取失败 [{form_name}]：{e}[/red]")
+    return []
+
+
+_GENERIC_WORDS = {
+    "assessment", "assessments", "evaluation", "evaluations",
+    "test", "tests", "testing", "procedure", "procedures",
+    "form", "forms", "visit", "visits", "data", "collection",
+    "findings", "finding", "result", "results", "measurement",
+}
+
+def _get_relevant_chapters_for_new_form(form_name: str, chapters: list) -> list:
+    """筛选与新建 Form 名称相关的章节（关键词匹配，过滤通用词）"""
+    raw_keywords = [kw for kw in form_name.lower().split() if len(kw) > 3]
+    keywords = [kw for kw in raw_keywords if kw not in _GENERIC_WORDS]
+    if not keywords:
+        keywords = raw_keywords  # 全是通用词时降级使用原词
+    matched = [c for c in chapters if any(kw in c.title.lower() for kw in keywords)]
+    return matched  # 不做兜底（情况C就是没有匹配）
+
+
+def _get_chapter_context(
+    chapters: list,
+    docx_path: str,
+    file_type: str,
+    max_chars: int = 5000,
+) -> str:
+    """从章节列表拼接纯文本上下文（仅 docx 有效，PDF 返回空）"""
+    if file_type != "docx" or not docx_path or not chapters:
+        return ""
+
+    parts = []
+    total = 0
+    for chapter in chapters:
+        try:
+            from .docx_extractor import extract_chapter_content
+            content = extract_chapter_content(docx_path, chapter)
+            text = f"=== {chapter.title} ===\n{content.full_text}"
+            parts.append(text)
+            total += len(text)
+            if total >= max_chars:
+                break
+        except Exception:
+            pass
+    return "\n\n".join(parts)[:max_chars]
 
 
 # ─────────────────────────────────────────────
